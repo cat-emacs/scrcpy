@@ -1,12 +1,12 @@
-;;; android-scrcpy.el --- Control scrcpy from Emacs -*- lexical-binding: t; -*-
+;;; scrcpy.el --- Control scrcpy from Emacs -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026
 
 ;; Author: R.W. van 't Veer
 ;; Keywords: tools processes android
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "28.1") (transient "0.3.0") (android-adb "0.1.0"))
-;; URL: https://github.com/cat-emacs/android-scrcpy
+;; Package-Requires: ((emacs "28.1") (transient "0.3.0") (adb "0.1.0"))
+;; URL: https://github.com/cat-emacs/scrcpy
 
 ;; This program is free software; you can redistribute it and/or
 ;; modify it under the terms of the GNU General Public License
@@ -17,7 +17,7 @@
 
 ;; Provides a Transient interface for starting and managing scrcpy
 ;; processes.  Common scrcpy options are exposed as infix arguments,
-;; while `android-scrcpy-extra-arguments' supports less common options.
+;; while `scrcpy-extra-arguments' supports less common options.
 
 ;;; Code:
 
@@ -25,60 +25,60 @@
 (require 'seq)
 (require 'subr-x)
 (require 'transient)
-(require 'android-adb)
+(require 'adb)
 
-(defgroup android-scrcpy nil
+(defgroup scrcpy nil
   "Control scrcpy from Emacs."
   :group 'tools)
 
-(defun android-scrcpy--log (format-string &rest args)
+(defun scrcpy--log (format-string &rest args)
   "Log scrcpy message FORMAT-STRING with ARGS."
-  (apply #'message (concat "android-scrcpy: " format-string) args))
+  (apply #'message (concat "scrcpy: " format-string) args))
 
-(defcustom android-scrcpy-program "scrcpy"
+(defcustom scrcpy-program "scrcpy"
   "Executable used to run scrcpy.
 This may be either an executable name found in variable `exec-path' or an
 absolute path."
   :type 'string
-  :group 'android-scrcpy)
+  :group 'scrcpy)
 
-(defcustom android-scrcpy-extra-arguments nil
+(defcustom scrcpy-extra-arguments nil
   "Additional arguments appended to every scrcpy invocation.
 Each list item must be one complete command-line argument."
   :type '(repeat string)
-  :group 'android-scrcpy)
+  :group 'scrcpy)
 
-(defcustom android-scrcpy-display-buffer-on-start nil
+(defcustom scrcpy-display-buffer-on-start nil
   "Whether to display the scrcpy log buffer when starting scrcpy."
   :type 'boolean
-  :group 'android-scrcpy)
+  :group 'scrcpy)
 
-(defvar android-scrcpy--processes nil
+(defvar scrcpy--processes nil
   "Scrcpy processes started by Emacs.")
 
-(define-derived-mode android-scrcpy-output-mode comint-mode "scrcpy"
+(define-derived-mode scrcpy-output-mode comint-mode "scrcpy"
   "Major mode for scrcpy process output."
   (setq-local comint-process-echoes nil))
 
-(defun android-scrcpy--program ()
-  "Return the executable path for `android-scrcpy-program'."
-  (or (and (file-name-absolute-p android-scrcpy-program)
-           (file-executable-p android-scrcpy-program)
-           android-scrcpy-program)
-      (executable-find android-scrcpy-program)
+(defun scrcpy--program ()
+  "Return the executable path for `scrcpy-program'."
+  (or (and (file-name-absolute-p scrcpy-program)
+           (file-executable-p scrcpy-program)
+           scrcpy-program)
+      (executable-find scrcpy-program)
       (user-error "Cannot find scrcpy executable: %s"
-                  android-scrcpy-program)))
+                  scrcpy-program)))
 
-(defun android-scrcpy--device-candidates ()
+(defun scrcpy--device-candidates ()
   "Return completion candidates for connected Android devices."
   (mapcar (lambda (device)
-            (cons (android-adb-device-label device)
+            (cons (adb-device-label device)
                   (plist-get device :serial)))
-          (android-adb-devices t)))
+          (adb-devices t)))
 
-(defun android-scrcpy--read-device (prompt initial-input _history)
+(defun scrcpy--read-device (prompt initial-input _history)
   "Read a device serial using PROMPT and INITIAL-INPUT."
-  (let* ((candidates (android-scrcpy--device-candidates))
+  (let* ((candidates (scrcpy--device-candidates))
          (display-values (mapcar #'car candidates))
          (initial
           (or (car (rassoc initial-input candidates))
@@ -87,42 +87,42 @@ Each list item must be one complete command-line argument."
           (completing-read prompt display-values nil nil initial)))
     (or (cdr (assoc choice candidates)) choice)))
 
-(defun android-scrcpy--read-record-file (prompt initial-input _history)
+(defun scrcpy--read-record-file (prompt initial-input _history)
   "Read a recording path using PROMPT and INITIAL-INPUT."
   (expand-file-name
    (read-file-name prompt nil initial-input nil initial-input)))
 
-(defun android-scrcpy--argument-value (prefix args)
+(defun scrcpy--argument-value (prefix args)
   "Return the value of the first argument beginning with PREFIX in ARGS."
   (when-let* ((argument
                (seq-find (lambda (arg) (string-prefix-p prefix arg)) args)))
     (string-remove-prefix prefix argument)))
 
-(defun android-scrcpy--target-name (args)
+(defun scrcpy--target-name (args)
   "Return a short target name inferred from scrcpy ARGS."
   (cond
-   ((android-scrcpy--argument-value "--serial=" args))
+   ((scrcpy--argument-value "--serial=" args))
    ((member "--select-usb" args) "usb")
    ((member "--select-tcpip" args) "tcpip")
-   ((android-scrcpy--argument-value "--tcpip=" args)
+   ((scrcpy--argument-value "--tcpip=" args)
     (concat "tcpip-"
-            (android-scrcpy--argument-value "--tcpip=" args)))
+            (scrcpy--argument-value "--tcpip=" args)))
    (t "default")))
 
-(defun android-scrcpy--buffer-name (args)
+(defun scrcpy--buffer-name (args)
   "Return a process buffer name for scrcpy ARGS."
-  (format "*android-scrcpy:%s*"
+  (format "*scrcpy:%s*"
           (replace-regexp-in-string
            "[^[:alnum:]._-]" "-"
-           (android-scrcpy--target-name args))))
+           (scrcpy--target-name args))))
 
-(defun android-scrcpy--command (args)
+(defun scrcpy--command (args)
   "Return the complete scrcpy command for transient ARGS."
-  (append (list (android-scrcpy--program))
-          android-scrcpy-extra-arguments
+  (append (list (scrcpy--program))
+          scrcpy-extra-arguments
           args))
 
-(defun android-scrcpy--connection-arguments (args)
+(defun scrcpy--connection-arguments (args)
   "Return only device connection arguments from ARGS."
   (seq-filter
    (lambda (arg)
@@ -131,18 +131,18 @@ Each list item must be one complete command-line argument."
          (string-prefix-p "--tcpip=" arg)))
    args))
 
-(defun android-scrcpy--format-command (command)
+(defun scrcpy--format-command (command)
   "Return shell-quoted display text for COMMAND."
   (mapconcat #'shell-quote-argument command " "))
 
-(defun android-scrcpy--live-processes ()
+(defun scrcpy--live-processes ()
   "Return live scrcpy processes and discard stale entries."
-  (setq android-scrcpy--processes
-        (seq-filter #'process-live-p android-scrcpy--processes)))
+  (setq scrcpy--processes
+        (seq-filter #'process-live-p scrcpy--processes)))
 
-(defun android-scrcpy--read-process (&optional prompt)
+(defun scrcpy--read-process (&optional prompt)
   "Read a live scrcpy process using optional PROMPT."
-  (let ((processes (android-scrcpy--live-processes)))
+  (let ((processes (scrcpy--live-processes)))
     (cond
      ((null processes)
       (user-error "No scrcpy process is running"))
@@ -154,7 +154,7 @@ Each list item must be one complete command-line argument."
                (lambda (process)
                  (cons
                   (format "%s [%s]"
-                          (process-get process 'android-scrcpy-target)
+                          (process-get process 'scrcpy-target)
                           (process-name process))
                   process))
                processes))
@@ -163,158 +163,158 @@ Each list item must be one complete command-line argument."
                                (mapcar #'car candidates) nil t)))
         (cdr (assoc choice candidates)))))))
 
-(defun android-scrcpy--sentinel (process event)
+(defun scrcpy--sentinel (process event)
   "Handle scrcpy PROCESS state change described by EVENT."
   (when (memq (process-status process) '(exit signal))
     (let ((expected-stop
-           (process-get process 'android-scrcpy-expected-stop)))
-      (setq android-scrcpy--processes
-            (delq process android-scrcpy--processes))
+           (process-get process 'scrcpy-expected-stop)))
+      (setq scrcpy--processes
+            (delq process scrcpy--processes))
       (when (buffer-live-p (process-buffer process))
         (with-current-buffer (process-buffer process)
           (let ((inhibit-read-only t))
             (goto-char (point-max))
             (insert (format "\nProcess %s" (string-trim event))))))
       (if (or expected-stop (zerop (process-exit-status process)))
-        (android-scrcpy--log "scrcpy stopped for %s"
-                      (process-get process 'android-scrcpy-target))
+        (scrcpy--log "scrcpy stopped for %s"
+                      (process-get process 'scrcpy-target))
         (when (buffer-live-p (process-buffer process))
           (pop-to-buffer (process-buffer process)))
-        (android-scrcpy--log "scrcpy failed for %s (exit %d)"
-                      (process-get process 'android-scrcpy-target)
+        (scrcpy--log "scrcpy failed for %s (exit %d)"
+                      (process-get process 'scrcpy-target)
                       (process-exit-status process))))))
 
-(defun android-scrcpy--start (args)
+(defun scrcpy--start (args)
   "Start scrcpy asynchronously with ARGS."
-  (let* ((command (android-scrcpy--command args))
-         (target (android-scrcpy--target-name args))
-         (buffer (get-buffer-create (android-scrcpy--buffer-name args)))
+  (let* ((command (scrcpy--command args))
+         (target (scrcpy--target-name args))
+         (buffer (get-buffer-create (scrcpy--buffer-name args)))
          (process-environment (copy-sequence process-environment)))
-    (setenv "ADB" (android-adb-executable))
+    (setenv "ADB" (adb-executable))
     (when-let* ((existing (get-buffer-process buffer))
                 ((process-live-p existing)))
       (user-error "Scrcpy is already running for %s" target))
     (with-current-buffer buffer
       (let ((inhibit-read-only t))
         (erase-buffer)
-        (insert "$ " (android-scrcpy--format-command command) "\n\n"))
-      (android-scrcpy-output-mode))
+        (insert "$ " (scrcpy--format-command command) "\n\n"))
+      (scrcpy-output-mode))
     (let ((process
            (make-process
-            :name (format "android-scrcpy-%s" target)
+            :name (format "scrcpy-%s" target)
             :buffer buffer
             :command command
             :connection-type 'pipe
             :noquery t
-            :sentinel #'android-scrcpy--sentinel)))
-      (process-put process 'android-scrcpy-arguments args)
-      (process-put process 'android-scrcpy-target target)
-      (push process android-scrcpy--processes)
-      (when android-scrcpy-display-buffer-on-start
+            :sentinel #'scrcpy--sentinel)))
+      (process-put process 'scrcpy-arguments args)
+      (process-put process 'scrcpy-target target)
+      (push process scrcpy--processes)
+      (when scrcpy-display-buffer-on-start
         (display-buffer buffer))
-      (android-scrcpy--log "started scrcpy for %s" target)
+      (scrcpy--log "started scrcpy for %s" target)
       process)))
 
 ;;;###autoload
-(defun android-scrcpy-start (&optional args)
+(defun scrcpy-start (&optional args)
   "Start scrcpy using transient ARGS.
-Interactively, use the current values from `android-scrcpy'."
-  (interactive (list (transient-args 'android-scrcpy)))
-  (android-scrcpy--start (or args nil)))
+Interactively, use the current values from `scrcpy'."
+  (interactive (list (transient-args 'scrcpy)))
+  (scrcpy--start (or args nil)))
 
-(defun android-scrcpy-stop (&optional process)
+(defun scrcpy-stop (&optional process)
   "Stop a running scrcpy PROCESS."
   (interactive)
-  (let ((process (or process (android-scrcpy--read-process))))
-    (process-put process 'android-scrcpy-expected-stop t)
+  (let ((process (or process (scrcpy--read-process))))
+    (process-put process 'scrcpy-expected-stop t)
     (condition-case nil
         (interrupt-process process)
       (error (delete-process process)))
-    (android-scrcpy--log "stopping scrcpy for %s"
-                  (process-get process 'android-scrcpy-target))))
+    (scrcpy--log "stopping scrcpy for %s"
+                  (process-get process 'scrcpy-target))))
 
-(defun android-scrcpy-restart (&optional process)
+(defun scrcpy-restart (&optional process)
   "Restart a running scrcpy PROCESS with its original arguments."
   (interactive)
-  (let* ((process (or process (android-scrcpy--read-process)))
-         (args (process-get process 'android-scrcpy-arguments)))
-    (process-put process 'android-scrcpy-expected-stop t)
+  (let* ((process (or process (scrcpy--read-process)))
+         (args (process-get process 'scrcpy-arguments)))
+    (process-put process 'scrcpy-expected-stop t)
     (delete-process process)
-    (android-scrcpy--start args)))
+    (scrcpy--start args)))
 
-(defun android-scrcpy-show-output (&optional process)
+(defun scrcpy-show-output (&optional process)
   "Display the output buffer for scrcpy PROCESS."
   (interactive)
   (pop-to-buffer
-   (process-buffer (or process (android-scrcpy--read-process)))))
+   (process-buffer (or process (scrcpy--read-process)))))
 
-(defun android-scrcpy-copy-command ()
+(defun scrcpy-copy-command ()
   "Copy the scrcpy command represented by the current transient values."
   (interactive)
   (let ((command
-         (android-scrcpy--format-command
-          (android-scrcpy--command (transient-args 'android-scrcpy)))))
+         (scrcpy--format-command
+          (scrcpy--command (transient-args 'scrcpy)))))
     (kill-new command)
     (message "Copied: %s" command)))
 
-(defun android-scrcpy--run-info (title &rest args)
+(defun scrcpy--run-info (title &rest args)
   "Run scrcpy with ARGS and display the output in buffer TITLE."
   (let ((buffer (get-buffer-create title))
         (process-environment (copy-sequence process-environment))
         status)
-    (setenv "ADB" (android-adb-executable))
+    (setenv "ADB" (adb-executable))
     (with-current-buffer buffer
       (let ((inhibit-read-only t))
         (erase-buffer)
         (setq status
               (apply #'call-process
-                     (android-scrcpy--program) nil t nil args)))
+                     (scrcpy--program) nil t nil args)))
       (special-mode))
     (pop-to-buffer buffer)
     (unless (zerop status)
       (user-error "Scrcpy exited with status %s" status))))
 
-(defun android-scrcpy-version ()
+(defun scrcpy-version ()
   "Display the installed scrcpy version."
   (interactive)
-  (android-scrcpy--run-info "*android-scrcpy-version*" "--version"))
+  (scrcpy--run-info "*scrcpy-version*" "--version"))
 
-(defun android-scrcpy-list-displays ()
+(defun scrcpy-list-displays ()
   "List displays reported by the selected Android device."
   (interactive)
-  (apply #'android-scrcpy--run-info
-         "*android-scrcpy-displays*"
+  (apply #'scrcpy--run-info
+         "*scrcpy-displays*"
          (append
-          (android-scrcpy--connection-arguments
-           (transient-args 'android-scrcpy))
+          (scrcpy--connection-arguments
+           (transient-args 'scrcpy))
           '("--list-displays"))))
 
-(defun android-scrcpy-list-encoders ()
+(defun scrcpy-list-encoders ()
   "List encoders reported by the selected Android device."
   (interactive)
-  (apply #'android-scrcpy--run-info
-         "*android-scrcpy-encoders*"
+  (apply #'scrcpy--run-info
+         "*scrcpy-encoders*"
          (append
-          (android-scrcpy--connection-arguments
-           (transient-args 'android-scrcpy))
+          (scrcpy--connection-arguments
+           (transient-args 'scrcpy))
           '("--list-encoders"))))
 
-(defun android-scrcpy-list-cameras ()
+(defun scrcpy-list-cameras ()
   "List cameras reported by the selected Android device."
   (interactive)
-  (apply #'android-scrcpy--run-info
-         "*android-scrcpy-cameras*"
+  (apply #'scrcpy--run-info
+         "*scrcpy-cameras*"
          (append
-          (android-scrcpy--connection-arguments
-           (transient-args 'android-scrcpy))
+          (scrcpy--connection-arguments
+           (transient-args 'scrcpy))
           '("--list-cameras"))))
 
-;;;###autoload (autoload 'android-scrcpy "android-scrcpy" nil t)
-(transient-define-prefix android-scrcpy ()
+;;;###autoload (autoload 'scrcpy "scrcpy" nil t)
+(transient-define-prefix scrcpy ()
   "Configure, start, and manage scrcpy."
   [["Connection"
     ("-s" "Device serial" "--serial="
-     :reader android-scrcpy--read-device)
+     :reader scrcpy--read-device)
     ("-u" "Select USB device" "--select-usb")
     ("-e" "Select TCP/IP device" "--select-tcpip")
     ("-t" "Connect over TCP/IP" "--tcpip=")
@@ -361,7 +361,7 @@ Interactively, use the current values from `android-scrcpy'."
     ("-y" "Duplicate audio" "--audio-dup")]
    ["Recording"
     ("-r" "Record to file" "--record="
-     :reader android-scrcpy--read-record-file)
+     :reader scrcpy--read-record-file)
     ("-R" "Record format" "--record-format="
      :choices ("mp4" "mkv" "m4a" "mka" "opus" "aac" "flac" "wav"))
     ("-N" "No playback" "--no-playback")
@@ -369,17 +369,17 @@ Interactively, use the current values from `android-scrcpy'."
     ("-O" "No audio playback" "--no-audio-playback")
     ("-L" "Time limit" "--time-limit=")]]
   [["Actions"
-    ("RET" "Start" android-scrcpy-start)
-    ("x" "Stop" android-scrcpy-stop)
-    ("X" "Restart" android-scrcpy-restart)
-    ("z" "Show output" android-scrcpy-show-output)
-    ("w" "Copy command" android-scrcpy-copy-command)]
+    ("RET" "Start" scrcpy-start)
+    ("x" "Stop" scrcpy-stop)
+    ("X" "Restart" scrcpy-restart)
+    ("z" "Show output" scrcpy-show-output)
+    ("w" "Copy command" scrcpy-copy-command)]
    ["Inspect"
-    ("?" "Version" android-scrcpy-version)
-    ("D" "List displays" android-scrcpy-list-displays)
-    ("E" "List encoders" android-scrcpy-list-encoders)
-    ("I" "List cameras" android-scrcpy-list-cameras)]])
+    ("?" "Version" scrcpy-version)
+    ("D" "List displays" scrcpy-list-displays)
+    ("E" "List encoders" scrcpy-list-encoders)
+    ("I" "List cameras" scrcpy-list-cameras)]])
 
-(provide 'android-scrcpy)
+(provide 'scrcpy)
 
-;;; android-scrcpy.el ends here
+;;; scrcpy.el ends here

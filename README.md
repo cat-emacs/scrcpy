@@ -1,20 +1,20 @@
-# android-scrcpy
+# scrcpy
 
 Standalone scrcpy Transient interface for Emacs 28.1+. Requires Transient 0.3.0,
-android-adb 0.1.0, and installed scrcpy/adb executables. No Android project or
+adb 0.1.0, and installed scrcpy/adb executables. No Android project or
 android-mode is required.
 
 ## Installation
 
 ```elisp
-(use-package android-adb
-  :vc (:url "https://github.com/cat-emacs/android-adb"))
-(use-package android-scrcpy
-  :vc (:url "https://github.com/cat-emacs/android-scrcpy")
-  :commands (android-scrcpy android-scrcpy-start))
+(use-package adb
+  :vc (:url "https://github.com/cat-emacs/adb"))
+(use-package scrcpy
+  :vc (:url "https://github.com/cat-emacs/scrcpy")
+  :commands (scrcpy scrcpy-start))
 ```
 
-Run `M-x android-scrcpy` to select a device and configure video, window, input,
+Run `M-x scrcpy` to select a device and configure video, window, input,
 audio, and recording options. RET starts scrcpy. The menu also stops/restarts
 sessions, shows output, copies commands, and inspects displays/encoders/cameras.
 Multiple devices can have independent sessions.
@@ -24,14 +24,18 @@ device serial, `-F` toggles fullscreen, and `-r` sets the recording path.
 Action keys remain unprefixed (`RET` start, `x` stop, `X` restart). These
 menu keys do not change the scrcpy command-line arguments.
 
-Set `android-scrcpy-program` for an explicit scrcpy executable and
-`android-scrcpy-extra-arguments` for options absent from the menu. Device
-completion uses android-adb. Scrcpy subprocesses receive the same adb executable
+Set `scrcpy-program` for an explicit scrcpy executable and
+`scrcpy-extra-arguments` for options absent from the menu. Device
+completion uses adb. Scrcpy subprocesses receive the same adb executable
 through their ADB environment variable without changing Emacs's environment.
-All existing `android-scrcpy-*` command and option names are preserved.
+This package was previously named `android-scrcpy`. Replace its package
+declaration with `scrcpy` and rename configured `android-scrcpy-*` symbols to
+`scrcpy-*`. Update the shared dependency from `android-adb` to `adb` as well.
+Restart Emacs after installing the renamed packages; do not load both old and
+new implementations.
 
 ## Development
 
 Run `make install-deps`, then `make lint build test`. For a sibling local
-checkout, pass `ANDROID_ADB_DIR=/path/to/android-adb`.
+checkout, pass `ADB_DIR=/path/to/adb`.
 Licensed under GPL-3.0-or-later. Extracted from cat-emacs/android-mode.
