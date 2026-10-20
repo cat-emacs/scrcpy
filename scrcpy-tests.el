@@ -96,6 +96,93 @@
         (when (process-live-p process) (delete-process process))
         (when (buffer-live-p buffer) (kill-buffer buffer))))))
 
+(ert-deftest scrcpy-listed-options-keep-values-and-descriptions ()
+  (should
+   (equal
+    (scrcpy--parse-listed-options
+     "List of displays:\n    --display-id=0    (1080x2400)\n    --display-id=2    (1920x1080)\n"
+     "display-id")
+    '(("0" . "(1080x2400)") ("2" . "(1920x1080)"))))
+  (should
+   (equal
+    (scrcpy--parse-listed-options
+     "    --camera-id=0    (back, 4032x3024)\n    --camera-id=1    (front, 1920x1080)\n"
+     "camera-id")
+    '(("0" . "(back, 4032x3024)") ("1" . "(front, 1920x1080)")))))
+
+(ert-deftest scrcpy-encoder-parser-keeps-codec-and-marker ()
+  (should
+   (equal
+    (scrcpy--parse-encoders
+     "    --video-codec=h264 --video-encoder=c2.android.avc.encoder          (hw)\n    --audio-codec=opus --audio-encoder=c2.android.opus.encoder\n"
+     "video")
+    '(("c2.android.avc.encoder" . "(h264, hw)"))))
+  (should
+   (equal
+    (scrcpy--parse-encoders
+     "    --audio-codec=opus --audio-encoder=c2.android.opus.encoder\n"
+     "audio")
+    '(("c2.android.opus.encoder" . "(opus)")))))
+
+(ert-deftest scrcpy-tcpip-reader-offers-wireless-devices ()
+  (let (choices)
+    (cl-letf (((symbol-function 'adb-devices)
+               (lambda (&optional _)
+                 '((:serial "emulator-5554" :state device :model "Pixel")
+                   (:serial "192.0.2.10:5555" :state device :model "Tablet")
+                   (:serial "192.0.2.11:5555" :state offline))))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _)
+                 (setq choices collection)
+                 "192.0.2.10:5555 (Tablet, device)")))
+      (should (equal (scrcpy--read-tcpip "TCP/IP: " nil nil)
+                     "192.0.2.10:5555"))
+      (should (equal choices
+                     '("192.0.2.10:5555 (Tablet, device)"
+                       "192.0.2.11:5555 (192.0.2.11:5555, offline)"))))))
+
+(ert-deftest scrcpy-display-reader-uses-current-connection ()
+  (let (queried)
+    (cl-letf (((symbol-function 'transient-args)
+               (lambda (_command)
+                 '("--serial=SER1" "--fullscreen")))
+              ((symbol-function 'scrcpy--query)
+               (lambda (arguments)
+                 (setq queried arguments)
+                 "    --display-id=0    (1080x2400)\n    --display-id=3    (640x480)\n"))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _)
+                 (should (member "3 (640x480)" collection))
+                 "3 (640x480)")))
+      (let ((scrcpy--list-cache nil))
+        (should (equal (scrcpy--read-display "Display: " nil nil) "3"))
+        (should (equal queried '("--serial=SER1" "--list-displays")))))))
+
+(ert-deftest scrcpy-encoder-reader-returns-encoder-name ()
+  (cl-letf (((symbol-function 'transient-args) (lambda (_) nil))
+            ((symbol-function 'scrcpy--query)
+             (lambda (_arguments)
+               "    --video-codec=h264 --video-encoder=OMX.google.h264.encoder (sw)\n"))
+            ((symbol-function 'completing-read)
+             (lambda (_prompt _collection &rest _)
+               "OMX.google.h264.encoder (h264, sw)")))
+    (let ((scrcpy--list-cache nil))
+      (should (equal (scrcpy--read-video-encoder "Encoder: " nil nil)
+                     "OMX.google.h264.encoder")))))
+
+(ert-deftest scrcpy-listed-reader-falls-back-when-query-fails ()
+  (let (completed)
+    (cl-letf (((symbol-function 'transient-args)
+               (lambda (_) (user-error "No transient")))
+              ((symbol-function 'scrcpy--query)
+               (lambda (_) (user-error "device offline")))
+              ((symbol-function 'completing-read)
+               (lambda (&rest _) (setq completed t) "bad"))
+              ((symbol-function 'read-string)
+               (lambda (_prompt initial &rest _) (or initial "9"))))
+      (should (equal (scrcpy--read-camera "Camera: " nil nil) "9"))
+      (should-not completed))))
+
 (ert-deftest scrcpy-transient-separates-arguments-from-actions ()
   "Use Magit-style parameter keys without changing action bindings."
   (let (keys)
@@ -111,10 +198,14 @@
                        ("-e" . "--select-tcpip")
                        ("-t" . "--tcpip=")
                        ("-i" . "--display-id=")
+                       ("-P" . "--camera-id=")
+                       ("-Z" . "--camera-facing=")
+                       ("-H" . "--video-source=")
                        ("-m" . "--max-size=")
                        ("-f" . "--max-fps=")
                        ("-b" . "--video-bit-rate=")
                        ("-v" . "--video-codec=")
+                       ("-n" . "--video-encoder=")
                        ("-c" . "--crop=")
                        ("-o" . "--capture-orientation=")
                        ("-F" . "--fullscreen")
@@ -134,6 +225,7 @@
                        ("-A" . "--no-audio")
                        ("-j" . "--audio-source=")
                        ("-J" . "--audio-codec=")
+                       ("-U" . "--audio-encoder=")
                        ("-g" . "--audio-bit-rate=")
                        ("-y" . "--audio-dup")
                        ("-r" . "--record=")

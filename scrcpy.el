@@ -92,6 +92,186 @@ Each list item must be one complete command-line argument."
   (expand-file-name
    (read-file-name prompt nil initial-input nil initial-input)))
 
+(defvar scrcpy--list-cache nil
+  "Cached scrcpy list output, keyed by list flag and connection arguments.")
+
+(defun scrcpy--query (arguments)
+  "Return output from scrcpy ARGUMENTS, or signal on failure."
+  (let ((buffer (generate-new-buffer " *scrcpy-query*"))
+        (process-environment (copy-sequence process-environment))
+        process)
+    (setenv "ADB" (adb-executable))
+    (unwind-protect
+        (progn
+          (setq process
+                (make-process
+                 :name "scrcpy-query"
+                 :buffer buffer
+                 :command (append (list (scrcpy--program)) arguments)
+                 :connection-type 'pipe
+                 :sentinel #'ignore
+                 :noquery t))
+          (let ((deadline (+ (float-time) 20)))
+            (while (and (process-live-p process) (< (float-time) deadline))
+              (accept-process-output process 0.1))
+            (when (process-live-p process)
+              (delete-process process)
+              (user-error "Scrcpy query timed out")))
+          (accept-process-output process 0)
+          (unless (and (eq (process-status process) 'exit)
+                       (zerop (process-exit-status process)))
+            (user-error "Scrcpy query failed: %s"
+                        (string-trim
+                         (with-current-buffer buffer (buffer-string)))))
+          (with-current-buffer buffer (buffer-string)))
+      (when (and process (process-live-p process)) (delete-process process))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(defun scrcpy--list-output (flag)
+  "Return output of scrcpy FLAG for the current connection arguments."
+  (let* ((connection
+          (ignore-errors
+            (scrcpy--connection-arguments (transient-args 'scrcpy))))
+         (key (cons flag connection))
+         (cached (assoc key scrcpy--list-cache)))
+    (if cached
+        (cdr cached)
+      (let ((output (scrcpy--query (append connection (list flag)))))
+        (push (cons key output) scrcpy--list-cache)
+        output))))
+
+(defun scrcpy--parse-listed-options (output option)
+  "Return OPTION values found in scrcpy OUTPUT.
+Each result is a (VALUE . DESCRIPTION) pair."
+  (let ((regexp
+         (format "--%s=\\([^[:space:]]+\\)\\(?:[[:space:]]+\\(.+\\)\\)?"
+                 (regexp-quote option)))
+        found)
+    (dolist (line (split-string (or output "") "\n" t))
+      (when (string-match regexp line)
+        (push (cons (match-string 1 line)
+                    (and (match-string 2 line)
+                         (string-trim (match-string 2 line))))
+              found)))
+    (nreverse found)))
+
+(defun scrcpy--parse-encoders (output kind)
+  "Return KIND encoder candidates from scrcpy OUTPUT.
+KIND is \"video\" or \"audio\".  Each result is (NAME . DESCRIPTION)."
+  (let ((regexp
+         (format "--%s-codec=\\([^[:space:]]+\\)[[:space:]]+--%s-encoder=\\([^[:space:]]+\\)\\(?:[[:space:]]+\\(.+\\)\\)?"
+                 kind kind))
+        found)
+    (dolist (line (split-string (or output "") "\n" t))
+      (when (string-match regexp line)
+        (let ((codec (match-string 1 line))
+              (name (match-string 2 line))
+              (marker (and (match-string 3 line)
+                           (string-trim (match-string 3 line)))))
+          (when (and marker (string-match "\\`(\\(.*\\))\\'" marker))
+            (setq marker (match-string 1 marker)))
+          (push (cons name
+                      (format "(%s%s)"
+                              codec
+                              (if (and marker (not (string-empty-p marker)))
+                                  (concat ", " marker)
+                                "")))
+                found))))
+    (nreverse found)))
+
+(defun scrcpy--complete-candidate (prompt candidates initial)
+  "Read a value for PROMPT from CANDIDATES, preserving INITIAL.
+CANDIDATES are (VALUE . DESCRIPTION) pairs.  An absent list falls back to
+free text, and a typed value that is not listed is accepted."
+  (if (null candidates)
+      (read-string prompt initial)
+    (let* ((labels
+            (mapcar
+             (lambda (candidate)
+               (let ((value (car candidate))
+                     (description (cdr candidate)))
+                 (cons (if (and description
+                                (not (string-empty-p description)))
+                           (format "%s %s" value description)
+                         value)
+                       value)))
+             candidates))
+           (initial-label (or (car (rassoc initial labels)) initial))
+           (default (and (null initial) (= (length labels) 1) (caar labels)))
+           (choice (completing-read prompt (mapcar #'car labels) nil nil
+                                    initial-label nil default)))
+      (or (cdr (assoc choice labels)) choice))))
+
+(defun scrcpy--read-listed (prompt initial-input list-flag option)
+  "Read OPTION values listed by scrcpy LIST-FLAG.
+PROMPT and INITIAL-INPUT come from Transient.  A failed or empty query falls
+back to free text."
+  (let ((candidates
+         (condition-case err
+             (progn
+               (message "scrcpy: querying %s..."
+                        (string-remove-prefix "--list-" list-flag))
+               (scrcpy--parse-listed-options
+                (scrcpy--list-output list-flag) option))
+           (error
+            (message "scrcpy: %s" (error-message-string err))
+            nil))))
+    (scrcpy--complete-candidate prompt candidates initial-input)))
+
+(defun scrcpy--tcpip-candidates ()
+  "Return current adb TCP/IP devices as completion candidates."
+  (delete-dups
+   (delq nil
+         (mapcar
+          (lambda (device)
+            (let ((serial (plist-get device :serial)))
+              (when (and serial (string-match-p ":[0-9]+\\'" serial))
+                (cons serial
+                      (format "(%s, %s)"
+                              (or (plist-get device :model) serial)
+                              (plist-get device :state))))))
+          (adb-devices)))))
+
+(defun scrcpy--read-tcpip (prompt initial-input _history)
+  "Read a TCP/IP address using PROMPT and INITIAL-INPUT.
+Candidates come from adb.  Another address, including a leading +, can still
+be typed."
+  (condition-case err
+      (scrcpy--complete-candidate
+       prompt (scrcpy--tcpip-candidates) initial-input)
+    (error
+     (message "scrcpy: %s" (error-message-string err))
+     (read-string prompt initial-input))))
+
+(defun scrcpy--read-display (prompt initial-input _history)
+  "Read a display id using PROMPT and INITIAL-INPUT."
+  (scrcpy--read-listed prompt initial-input "--list-displays" "display-id"))
+
+(defun scrcpy--read-camera (prompt initial-input _history)
+  "Read a camera id using PROMPT and INITIAL-INPUT."
+  (scrcpy--read-listed prompt initial-input "--list-cameras" "camera-id"))
+
+(defun scrcpy--read-encoder (prompt initial-input kind)
+  "Read a KIND encoder using PROMPT and INITIAL-INPUT."
+  (let ((candidates
+         (condition-case err
+             (progn
+               (message "scrcpy: querying encoders...")
+               (scrcpy--parse-encoders
+                (scrcpy--list-output "--list-encoders") kind))
+           (error
+            (message "scrcpy: %s" (error-message-string err))
+            nil))))
+    (scrcpy--complete-candidate prompt candidates initial-input)))
+
+(defun scrcpy--read-video-encoder (prompt initial-input _history)
+  "Read a video encoder using PROMPT and INITIAL-INPUT."
+  (scrcpy--read-encoder prompt initial-input "video"))
+
+(defun scrcpy--read-audio-encoder (prompt initial-input _history)
+  "Read an audio encoder using PROMPT and INITIAL-INPUT."
+  (scrcpy--read-encoder prompt initial-input "audio"))
+
 (defun scrcpy--argument-value (prefix args)
   "Return the value of the first argument beginning with PREFIX in ARGS."
   (when-let* ((argument
@@ -186,6 +366,7 @@ Each list item must be one complete command-line argument."
 
 (defun scrcpy--start (args)
   "Start scrcpy asynchronously with ARGS."
+  (setq scrcpy--list-cache nil)
   (let* ((command (scrcpy--command args))
          (target (scrcpy--target-name args))
          (buffer (get-buffer-create (scrcpy--buffer-name args)))
@@ -317,14 +498,24 @@ Interactively, use the current values from `scrcpy'."
      :reader scrcpy--read-device)
     ("-u" "Select USB device" "--select-usb")
     ("-e" "Select TCP/IP device" "--select-tcpip")
-    ("-t" "Connect over TCP/IP" "--tcpip=")
-    ("-i" "Display id" "--display-id=")]
+    ("-t" "Connect over TCP/IP" "--tcpip="
+     :reader scrcpy--read-tcpip)
+    ("-i" "Display id" "--display-id="
+     :reader scrcpy--read-display)
+    ("-P" "Camera id" "--camera-id="
+     :reader scrcpy--read-camera)
+    ("-Z" "Camera facing" "--camera-facing="
+     :choices ("front" "back" "external"))]
    ["Video"
+    ("-H" "Video source" "--video-source="
+     :choices ("display" "camera"))
     ("-m" "Maximum size" "--max-size=")
     ("-f" "Maximum FPS" "--max-fps=")
     ("-b" "Video bit rate" "--video-bit-rate=")
     ("-v" "Video codec" "--video-codec="
      :choices ("h264" "h265" "av1" "raw"))
+    ("-n" "Video encoder" "--video-encoder="
+     :reader scrcpy--read-video-encoder)
     ("-c" "Crop" "--crop=")
     ("-o" "Capture orientation" "--capture-orientation="
      :choices ("0" "90" "180" "270"
@@ -357,6 +548,8 @@ Interactively, use the current values from `scrcpy'."
                "voice-performance"))
     ("-J" "Audio codec" "--audio-codec="
      :choices ("opus" "aac" "flac" "raw"))
+    ("-U" "Audio encoder" "--audio-encoder="
+     :reader scrcpy--read-audio-encoder)
     ("-g" "Audio bit rate" "--audio-bit-rate=")
     ("-y" "Duplicate audio" "--audio-dup")]
    ["Recording"

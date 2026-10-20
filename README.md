@@ -25,8 +25,11 @@ Action keys remain unprefixed (`RET` start, `x` stop, `X` restart). These
 menu keys do not change the scrcpy command-line arguments.
 
 Set `scrcpy-program` for an explicit scrcpy executable and
-`scrcpy-extra-arguments` for options absent from the menu. Device
-completion uses adb. Scrcpy subprocesses receive the same adb executable
+`scrcpy-extra-arguments` for options absent from the menu. Device, TCP/IP
+address, display, camera, and encoder prompts offer live candidates. TCP/IP
+addresses come from adb; displays, cameras, and encoders come from scrcpy's
+list commands for the selected connection. A typed value is still accepted when
+a query has no candidates. Scrcpy subprocesses receive the same adb executable
 through their ADB environment variable without changing Emacs's environment.
 This package was previously named `android-scrcpy`. Replace its package
 declaration with `scrcpy` and rename configured `android-scrcpy-*` symbols to
